@@ -1,0 +1,175 @@
+name: Build patched release
+
+on:
+  schedule:
+    # Mondays 03:00 UTC (10:00 UTC+7).
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream release tag (empty = latest release)
+        type: string
+        default: ""
+      force:
+        description: Rebuild even if this repo already has a release with that tag
+        type: boolean
+        default: false
+      language:
+        description: Firmware language (build.py --language)
+        type: string
+        default: ru-RU
+      wake_word:
+        description: Wake-word model (empty = build.py default)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patched-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: 78/xiaozhi-esp32
+  BOARD: xingzhi-cube-1.54tft-wifi
+  VARIANT: xingzhi-cube-1.54tft-wifi-voldown
+  FALLBACK_IDF_IMAGE: espressif/idf:release-v6.1
+
+jobs:
+  check:
+    name: Find upstream release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      build: ${{ steps.resolve.outputs.build }}
+      idf_image: ${{ steps.resolve.outputs.idf_image }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          TAG="$INPUT_TAG"
+          if [[ -z "$TAG" ]]; then
+            TAG=$(gh release view --repo "$UPSTREAM_REPO" --json tagName -q .tagName)
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Unexpected tag: $TAG"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Upstream release: $TAG" >> "$GITHUB_STEP_SUMMARY"
+
+          BUILD=true
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [[ "$FORCE" != "true" ]]; then
+            BUILD=false
+            echo "$TAG is already built here, nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+
+          # Build with the same ESP-IDF image upstream used for this tag.
+          IMAGE=$(curl -fsSL "https://raw.githubusercontent.com/$UPSTREAM_REPO/$TAG/.github/workflows/release.yml" 2>/dev/null \
+            | grep -oE 'image:[[:space:]]*espressif/idf:[A-Za-z0-9._-]+' | head -n1 | sed -E 's/image:[[:space:]]*//' || true)
+          echo "idf_image=${IMAGE:-$FALLBACK_IDF_IMAGE}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ needs.check.outputs.tag }}
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.check.outputs.idf_image }}
+    steps:
+      - name: Checkout this repo (patches)
+        uses: actions/checkout@v4
+        with:
+          path: self
+
+      - name: Checkout upstream release
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ needs.check.outputs.tag }}
+          path: firmware
+
+      - name: Apply patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/firmware"
+          cd firmware
+          for p in ../self/patches/*.patch; do
+            echo "Applying $p"
+            git apply --3way --whitespace=nowarn "$p"
+          done
+          git status --short
+
+      - name: Build firmware
+        shell: bash
+        env:
+          LANGUAGE: ${{ inputs.language || 'ru-RU' }}
+          WAKE_WORD: ${{ inputs.wake_word }}
+        run: |
+          set -euo pipefail
+          source "$IDF_PATH/export.sh"
+          cd firmware
+          OPTIONS=(--language "$LANGUAGE")
+          if [[ -n "$WAKE_WORD" ]]; then
+            OPTIONS+=(--wake-word "$WAKE_WORD")
+          fi
+          python scripts/build.py "$BOARD" --name "$VARIANT" "${OPTIONS[@]}"
+          mkdir -p ../out
+          PREFIX="${VARIANT}_${LANGUAGE}_${{ needs.check.outputs.tag }}"
+          cp build/merged-binary.bin "../out/${PREFIX}_merged-binary.bin"
+          cp build/xiaozhi.bin "../out/${PREFIX}_xiaozhi.bin"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: out/*.bin
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: out
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          LANGUAGE: ${{ inputs.language || 'ru-RU' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          Patched rebuild of upstream release [$TAG](https://github.com/$UPSTREAM_REPO/releases/tag/$TAG).
+
+          - Board: \`$BOARD\`, build variant \`$VARIANT\`
+          - Language: \`$LANGUAGE\`
+          - Vol- is the talk button (click: start/stop a conversation; during startup: Wi-Fi setup)
+          - BOOT and Vol+ are disabled; change the volume by voice
+
+          Files:
+          - \`*_merged-binary.bin\`: full image, flash at offset 0x0 over USB
+          - \`*_xiaozhi.bin\`: application image for OTA
+
+          Build run: $RUN_URL
+          EOF
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/*.bin --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$TAG" out/*.bin --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG (patched, $LANGUAGE)" --notes-file notes.md
+          fi
