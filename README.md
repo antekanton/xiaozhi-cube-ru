@@ -42,6 +42,6 @@ The xiaozhi.me OTA server will not update this build automatically. Flash new re
 ## Updating the patch
 
 1. In the fork `antekanton/xiaozhi-esp32`, check out the new upstream tag and re-apply your change on a branch.
-2. Build it: `python3 scripts/build.py xingzhi-cube-1.54tft-wifi --name xingzhi-cube-1.54tft-wifi-voldown --language ru-RU`.
+2. Build it: `python3 scripts/build.py nologo/xingzhi-cube-1.54tft-wifi --name xingzhi-cube-1.54tft-wifi-voldown --language ru-RU`.
 3. Export: `git diff <tag> HEAD -- main/boards/nologo/xingzhi-cube-1.54tft-wifi > patches/0001-voldown-talk-button.patch`.
 4. Commit it here and run the workflow with `force: true`.

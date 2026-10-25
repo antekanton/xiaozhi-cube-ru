@@ -32,7 +32,7 @@ concurrency:
 
 env:
   UPSTREAM_REPO: 78/xiaozhi-esp32
-  BOARD: xingzhi-cube-1.54tft-wifi
+  BOARD: nologo/xingzhi-cube-1.54tft-wifi
   VARIANT: xingzhi-cube-1.54tft-wifi-voldown
   FALLBACK_IDF_IMAGE: espressif/idf:release-v6.1
 
