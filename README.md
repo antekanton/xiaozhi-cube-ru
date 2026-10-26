@@ -26,6 +26,10 @@ Manual run: **Actions → Build patched release → Run workflow**. Inputs:
 
 If the patch no longer applies to a new upstream release, the run fails, GitHub emails you, and nothing is published.
 
+## Telegram notifications
+
+The workflow sends a Telegram message when a new release is published or when a run fails, and stays silent when there is nothing new to build. It uses the repository secrets `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; without them, notifications are skipped.
+
 ## Flashing
 
 Each release has two files:

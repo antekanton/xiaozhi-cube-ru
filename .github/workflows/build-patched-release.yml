@@ -173,3 +173,33 @@ jobs:
             gh release create "$TAG" out/*.bin --repo "$GITHUB_REPOSITORY" \
               --title "$TAG (patched, $LANGUAGE)" --notes-file notes.md
           fi
+
+  notify:
+    name: Telegram notification
+    needs: [check, build, release]
+    # Notify on a new release or on any failure; stay silent when nothing was built.
+    if: always() && (needs.release.result == 'success' || contains(needs.*.result, 'failure'))
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          TAG: ${{ needs.check.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+            echo "::warning::Telegram secrets are not set, skipping"
+            exit 0
+          fi
+          if [[ "$RELEASE_RESULT" == "success" ]]; then
+            TEXT=$(printf '✅ xiaozhi-cube-ru: опубликован релиз %s\n%s' "$TAG" "$RELEASE_URL")
+          else
+            TEXT=$(printf '❌ xiaozhi-cube-ru: сборка %s упала\n%s' "${TAG:-?}" "$RUN_URL")
+          fi
+          curl -fsS -m 30 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${TEXT}" \
+            --data-urlencode "disable_web_page_preview=true" > /dev/null
